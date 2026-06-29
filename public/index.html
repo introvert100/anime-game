@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Sakura Dash — anime runner</title>
+<meta name="description" content="A cute anime girl endless runner. Dash through the sakura streets, dodge lanterns, and climb the scroll of fame." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="sky" id="sky" aria-hidden="true">
+  <div class="stars" id="stars"></div>
+  <div class="sun-moon" id="sunMoon"></div>
+  <div class="cloud cloud--a"></div>
+  <div class="cloud cloud--b"></div>
+  <div class="cloud cloud--c"></div>
+  <div class="torii torii--far"></div>
+  <div class="torii torii--near"></div>
+</div>
+
+<div class="page">
+
+  <header class="brand">
+    <h1 class="brand__title">
+      <span class="brand__kanji" aria-hidden="true">桜</span>
+      Sakura&nbsp;Dash
+    </h1>
+    <p class="brand__tag">an endless dash through the sakura streets</p>
+  </header>
+
+  <main class="layout">
+
+    <!-- ===================== GAME ===================== -->
+    <section class="lantern-frame" aria-label="Game">
+      <div class="lantern-frame__tassel" aria-hidden="true"></div>
+
+      <div class="game-wrap">
+        <canvas id="game" width="900" height="380" role="img"
+          aria-label="Sakura Dash game canvas. Press space or tap to jump over lanterns."></canvas>
+
+        <!-- HUD -->
+        <div class="hud">
+          <div class="hud__score">
+            <span class="hud__label">score</span>
+            <span class="hud__value" id="hudScore">0</span>
+          </div>
+          <div class="hud__best">
+            <span class="hud__label">best</span>
+            <span class="hud__value" id="hudBest">0</span>
+          </div>
+        </div>
+
+        <!-- Start overlay -->
+        <div class="overlay" id="startOverlay">
+          <div class="overlay__card">
+            <p class="overlay__chibi" aria-hidden="true">🌸🏃‍♀️🌸</p>
+            <h2 class="overlay__title">Ready to dash?</h2>
+            <p class="overlay__hint">
+              Press <kbd>Space</kbd> / <kbd>↑</kbd> or tap the field to jump.<br/>
+              Hold to jump higher. Dodge the lanterns!
+            </p>
+            <button class="btn btn--primary" id="startBtn">Start running</button>
+          </div>
+        </div>
+
+        <!-- Game over overlay -->
+        <div class="overlay overlay--hidden" id="overOverlay">
+          <div class="overlay__card">
+            <p class="overlay__chibi" aria-hidden="true">🌙✨</p>
+            <h2 class="overlay__title">Run complete!</h2>
+            <p class="overlay__result">
+              Score: <strong id="finalScore">0</strong>
+            </p>
+            <p class="overlay__newbest" id="newBestBadge" hidden>✨ New personal best!</p>
+
+            <form class="name-form" id="nameForm" autocomplete="off">
+              <label class="name-form__label" for="nameInput">Save your run to the scroll of fame</label>
+              <div class="name-form__row">
+                <input
+                  class="name-form__input"
+                  id="nameInput"
+                  name="name"
+                  maxlength="12"
+                  placeholder="your name"
+                  required
+                  pattern="[A-Za-z0-9_\-\s]{1,12}"
+                  title="Up to 12 letters, numbers, spaces, - or _"
+                />
+                <button class="btn btn--primary" type="submit" id="saveBtn">Save</button>
+              </div>
+              <p class="name-form__status" id="saveStatus" role="status" aria-live="polite"></p>
+            </form>
+
+            <button class="btn btn--ghost" id="retryBtn">Run again</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="game-caption">Tip: the streets get faster as the sun goes down 🌇→🌃</p>
+    </section>
+
+    <!-- ===================== LEADERBOARD ===================== -->
+    <aside class="scroll-board" aria-label="Leaderboard">
+      <div class="scroll-board__cap scroll-board__cap--top" aria-hidden="true"></div>
+
+      <div class="scroll-board__body">
+        <h2 class="scroll-board__title">Scroll of Fame</h2>
+        <p class="scroll-board__sub">Top 10 dashers</p>
+
+        <ol class="leaderboard" id="leaderboardList">
+          <!-- populated by app.js -->
+          <li class="leaderboard__empty">Loading scores…</li>
+        </ol>
+
+        <div class="divider" role="separator" aria-hidden="true">
+          <span>✿</span>
+        </div>
+
+        <h3 class="scroll-board__title scroll-board__title--small">Your runs</h3>
+        <p class="scroll-board__sub">saved on this device</p>
+
+        <ol class="leaderboard leaderboard--mine" id="myScoresList">
+          <li class="leaderboard__empty">No runs yet — go dash!</li>
+        </ol>
+      </div>
+
+      <div class="scroll-board__cap scroll-board__cap--bottom" aria-hidden="true"></div>
+    </aside>
+
+  </main>
+
+  <footer class="site-footer">
+    <span id="apiStatus" class="api-status" role="status" aria-live="polite">connecting to the scroll…</span>
+  </footer>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

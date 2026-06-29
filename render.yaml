@@ -1,0 +1,23 @@
+# Render "Blueprint" config — lets you deploy with one click via
+# https://render.com/docs/infrastructure-as-code
+#
+# In the Render dashboard: New + → Blueprint → connect this repo → Apply.
+# You'll still need to fill in SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
+# as secret values when prompted (they're marked sync:false below so
+# Render asks for them instead of storing them in this file).
+
+services:
+  - type: web
+    name: sakura-dash
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.1
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false

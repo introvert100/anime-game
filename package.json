@@ -1,0 +1,17 @@
+{
+  "name": "sakura-dash",
+  "version": "1.0.0",
+  "description": "Sakura Dash — a cute anime-girl endless runner with a Node.js backend and Supabase leaderboard. No frameworks, no dependencies.",
+  "private": true,
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node server/server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "license": "MIT"
+}

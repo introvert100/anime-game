@@ -1,0 +1,14 @@
+# dependencies (none expected, but just in case)
+node_modules/
+
+# secrets — never commit real credentials
+server/.env
+.env
+.env.local
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
