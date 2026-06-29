@@ -17,9 +17,11 @@
   const GRAVITY = 0.0026;      // px/ms^2 (canvas units)
   const JUMP_VELOCITY = -1.05; // px/ms initial jump speed
   const HOLD_GRAVITY_SCALE = 0.55; // lighter gravity while holding = higher jump
-  const BASE_SPEED = 0.34;     // px/ms world scroll speed at score 0
-  const MAX_SPEED = 0.95;
-  const SPEED_RAMP = 0.000018; // speed gain per ms survived
+
+  // Chrome Dino tuning: slightly more gentle start, but higher speed ceiling
+  const BASE_SPEED = 0.32;     // px/ms world scroll speed at score 0
+  const MAX_SPEED = 1.30;      // Higher threshold for extreme difficulty
+  const SPEED_RAMP = 0.000012; // Gradual difficulty build-up over active runtime
 
   /* ---------- DOM refs ---------- */
   const canvas = document.getElementById("game");
@@ -62,6 +64,7 @@
   let nextObstacleAt = 0;
   let groundScrollX = 0;
   let dayPhase = 0; // 0 = day .. 1 = night, drives sky + colors
+  let trailHistory = []; // Tracks historical Y steps for fast motion blur speed lines
 
   hudBestEl.textContent = String(best);
 
@@ -105,14 +108,20 @@
     if (e.code === "Space" || e.code === "ArrowUp") releaseJump();
   });
 
+  // Comprehensive pointer events for high fidelity mouse + mobile response
   canvas.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     if (!running) return;
     pressJump();
   });
-  canvas.addEventListener("pointerup", releaseJump);
-  canvas.addEventListener("pointercancel", releaseJump);
-  canvas.addEventListener("pointerleave", releaseJump);
+  canvas.addEventListener("pointerup", SafeRelease);
+  canvas.addEventListener("pointercancel", SafeRelease);
+  canvas.addEventListener("pointerleave", SafeRelease);
+
+  function SafeRelease(e) {
+    if (e) e.preventDefault();
+    releaseJump();
+  }
 
   startBtn.addEventListener("click", startGame);
   retryBtn.addEventListener("click", () => {
@@ -126,6 +135,7 @@
     elapsedMs = 0;
     speed = BASE_SPEED;
     obstacles = [];
+    trailHistory = [];
     nextObstacleAt = 900;
     player.y = GROUND_Y;
     player.vy = 0;
@@ -134,6 +144,7 @@
     dayPhase = 0;
     updateSkyClass();
     hudScoreEl.textContent = "0";
+    hudScoreEl.parentElement.classList.remove("score-milestone");
     seedPetals();
   }
 
@@ -198,11 +209,20 @@
     speed = Math.min(MAX_SPEED, BASE_SPEED + elapsedMs * SPEED_RAMP);
 
     // score = distance survived
+    const oldScore = Math.floor(score);
     score += dt * speed * 0.06;
-    hudScoreEl.textContent = String(Math.floor(score));
+    const currentFloorScore = Math.floor(score);
+    hudScoreEl.textContent = String(currentFloorScore);
+
+    // CSS Milestone effect when crossing another hundred points!
+    if (currentFloorScore > oldScore && currentFloorScore % 100 === 0) {
+      const parentScore = hudScoreEl.parentElement;
+      parentScore.classList.add("score-milestone");
+      setTimeout(() => parentScore.classList.remove("score-milestone"), 400);
+    }
 
     // day -> dusk -> night over ~2200 score points, then loop softly
-    dayPhase = (Math.floor(score) % 2200) / 2200;
+    dayPhase = (currentFloorScore % 2200) / 2200;
     updateSkyClass();
 
     // ground scroll
@@ -222,21 +242,30 @@
     if (player.squashT > 0) player.squashT = Math.max(0, player.squashT - dt * 0.006);
     player.runFrame += dt * (player.onGround ? 0.012 : 0);
 
-    // obstacles
+    // Push coordinates for running dash trail mechanics
+    trailHistory.push({ y: player.y, squash: player.squashT, run: player.runFrame, ground: player.onGround });
+    if (trailHistory.length > 4) {
+      trailHistory.shift();
+    }
+
+    // obstacles distance tracking
     nextObstacleAt -= dt * speed;
     if (nextObstacleAt <= 0) {
       spawnObstacle();
-      const gap = 260 + Math.random() * 220 - speed * 90;
-      nextObstacleAt = Math.max(140, gap);
+
+      // Dynamic spacing: gaps shrink slightly when running fast to test reflexes
+      const dynamicGapScaler = Math.max(0.65, 1.0 - (speed - BASE_SPEED) * 0.4);
+      const gap = (260 + Math.random() * 220 - speed * 90) * dynamicGapScaler;
+      nextObstacleAt = Math.max(145, gap);
     }
     for (const o of obstacles) o.x -= dt * speed;
-    obstacles = obstacles.filter((o) => o.x + o.w > -20);
+    obstacles = obstacles.filter((o) => o.x + o.w > -40);
 
     // collision (slightly forgiving hitbox)
     const px1 = player.x + 10, px2 = player.x + player.w - 10;
     const py1 = player.y - player.h + 10, py2 = player.y - 4;
     for (const o of obstacles) {
-      const ox1 = o.x + 6, ox2 = o.x + o.w - 6;
+      const ox1 = o.x + 5, ox2 = o.x + o.w - 5;
       const oy1 = o.y - o.h, oy2 = o.y;
       const hit = px1 < ox2 && px2 > ox1 && py1 < oy2 && py2 > oy1;
       if (hit) {
@@ -258,16 +287,31 @@
   }
 
   function spawnObstacle() {
-    // lantern (ground) or low-hanging banner (must duck-jump under = here: just a taller lantern requiring earlier jump)
-    const tall = Math.random() < 0.35;
-    obstacles.push({
-      x: VW + 10,
-      y: GROUND_Y,
-      w: tall ? 30 : 26,
-      h: tall ? 64 : 44,
-      tall,
-      glow: Math.random() * Math.PI * 2,
-    });
+    const isHighCrane = score > 350 && Math.random() < 0.28;
+
+    if (isHighCrane) {
+      // High floating paper crane: stay down or match height perfectly
+      obstacles.push({
+        x: VW + 10,
+        y: GROUND_Y - 72,
+        w: 32,
+        h: 24,
+        isCrane: true,
+        glow: Math.random() * Math.PI * 2
+      });
+    } else {
+      // Standard Ground Lanterns
+      const tall = Math.random() < 0.35;
+      obstacles.push({
+        x: VW + 10,
+        y: GROUND_Y,
+        w: tall ? 30 : 26,
+        h: tall ? 64 : 44,
+        tall,
+        isCrane: false,
+        glow: Math.random() * Math.PI * 2,
+      });
+    }
   }
 
   function updateSkyClass() {
@@ -282,7 +326,22 @@
     drawPetals();
     drawGround();
     drawObstacles();
-    drawPlayer();
+
+    // Draw fading action trails if speed is high
+    if (speed > BASE_SPEED * 1.25) {
+      for (let i = 0; i < trailHistory.length; i++) {
+        const alpha = (i + 1) / trailHistory.length * 0.22;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        // Offsets copy behind main player position
+        const trailXOffset = (trailHistory.length - i) * -16 * (speed / MAX_SPEED);
+        drawPlayerSkeleton(player.x + trailXOffset, trailHistory[i].y, trailHistory[i].squash, trailHistory[i].run, trailHistory[i].ground, true);
+        ctx.restore();
+      }
+    }
+
+    // Draw real player
+    drawPlayerSkeleton(player.x, player.y, player.squashT, player.runFrame, player.onGround, false);
   }
 
   function drawPetals() {
@@ -319,8 +378,48 @@
 
   function drawObstacles() {
     for (const o of obstacles) {
-      drawLantern(o);
+      if (o.isCrane) {
+        drawCrane(o);
+      } else {
+        drawLantern(o);
+      }
     }
+  }
+
+  function drawCrane(o) {
+    const x = o.x, y = o.y, w = o.w, h = o.h;
+    const hoverBob = Math.sin(elapsedMs * 0.007 + x * 0.05) * 4;
+
+    ctx.save();
+    // Soft glowing aura for the crane
+    ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.beginPath();
+    ctx.arc(x + w / 2, y - h / 2 + hoverBob, w, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#FFF8F0"; // Cream origami paper
+    ctx.strokeStyle = "#FF6FA8"; // Soft pink lines
+    ctx.lineWidth = 1.5;
+
+    // Vector structural layout for origami bird
+    ctx.beginPath();
+    ctx.moveTo(x, y - h / 2 + hoverBob);
+    ctx.lineTo(x + w * 0.35, y - h + hoverBob); // upper wing peak
+    ctx.lineTo(x + w * 0.5, y - h * 0.2 + hoverBob); // inner chest node
+    ctx.lineTo(x + w, y - h * 0.75 + hoverBob); // beak front
+    ctx.lineTo(x + w * 0.65, y + hoverBob); // low throat
+    ctx.lineTo(x + w * 0.3, y + hoverBob); // base belly
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Secondary structural fold lines for genuine origami accenting
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.5, y - h * 0.2 + hoverBob);
+    ctx.lineTo(x + w * 0.2, y - h * 0.8 + hoverBob);
+    ctx.lineTo(x + w * 0.35, y - h + hoverBob);
+    ctx.stroke();
+    ctx.restore();
   }
 
   function drawLantern(o) {
@@ -370,44 +469,48 @@
     ctx.closePath();
   }
 
-  function drawPlayer() {
-    const squash = player.squashT; // 0..1
-    const x = player.x;
-    const y = player.y; // feet level
+  // Refactored to draw either standard player colors or neon speed silhouettes
+  function playerColor(standardColor, isTrail) {
+    return isTrail ? "rgba(255, 111, 168, 0.4)" : standardColor;
+  }
+
+  function drawPlayerSkeleton(x, y, squash, runFrame, onGround, isTrail) {
     const w = player.w;
     const h = player.h * (1 - squash * 0.18);
-    const bob = player.onGround ? Math.sin(player.runFrame) * 3 : 0;
+    const bob = onGround ? Math.sin(runFrame) * 3 : 0;
 
     ctx.save();
     ctx.translate(x + w / 2, y);
 
     // shadow
-    ctx.fillStyle = "rgba(74,64,99,0.18)";
-    ctx.beginPath();
-    ctx.ellipse(0, 6, w * 0.45, 6, 0, 0, Math.PI * 2);
-    ctx.fill();
+    if (!isTrail) {
+      ctx.fillStyle = "rgba(74,64,99,0.18)";
+      ctx.beginPath();
+      ctx.ellipse(0, 6, w * 0.45, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     ctx.translate(0, -h + bob * 0.2);
 
-    // legs (simple alternating run cycle)
-    const legSwing = player.onGround ? Math.sin(player.runFrame) : 0.4;
-    ctx.fillStyle = "#4A4063";
+    // legs
+    const legSwing = onGround ? Math.sin(runFrame) : 0.4;
+    ctx.fillStyle = playerColor("#4A4063", isTrail);
     ctx.fillRect(-w * 0.18 + legSwing * 6, h * 0.62, w * 0.16, h * 0.32);
     ctx.fillRect(w * 0.02 - legSwing * 6, h * 0.62, w * 0.16, h * 0.32);
 
     // skirt
-    ctx.fillStyle = "#FF6FA8";
+    ctx.fillStyle = playerColor("#FF6FA8", isTrail);
     roundRect(-w * 0.32, h * 0.42, w * 0.64, h * 0.26, 6);
     ctx.fill();
 
     // torso / top
-    ctx.fillStyle = "#FFF8F0";
+    ctx.fillStyle = playerColor("#FFF8F0", isTrail);
     roundRect(-w * 0.26, h * 0.16, w * 0.52, h * 0.32, 8);
     ctx.fill();
 
     // arms
-    const armSwing = player.onGround ? Math.sin(player.runFrame + Math.PI) * 8 : -6;
-    ctx.strokeStyle = "#FFE3EF";
+    const armSwing = onGround ? Math.sin(runFrame + Math.PI) * 8 : -6;
+    ctx.strokeStyle = playerColor("#FFE3EF", isTrail);
     ctx.lineWidth = 7;
     ctx.lineCap = "round";
     ctx.beginPath();
@@ -420,13 +523,13 @@
     ctx.stroke();
 
     // head
-    ctx.fillStyle = "#FFE3D6";
+    ctx.fillStyle = playerColor("#FFE3D6", isTrail);
     ctx.beginPath();
     ctx.arc(0, h * 0.05, w * 0.26, 0, Math.PI * 2);
     ctx.fill();
 
-    // hair (twin tails + bangs) — dark plum to match palette
-    ctx.fillStyle = "#5B4B8A";
+    // hair
+    ctx.fillStyle = playerColor("#5B4B8A", isTrail);
     ctx.beginPath();
     ctx.arc(0, h * 0.02, w * 0.29, Math.PI * 1.02, Math.PI * 1.98);
     ctx.fill();
@@ -437,7 +540,7 @@
     ctx.quadraticCurveTo(0, h * -0.16, -w * 0.22, h * -0.02);
     ctx.fill();
     // twin tails
-    const tailSwing = Math.sin(player.runFrame * 0.8) * 4;
+    const tailSwing = Math.sin(runFrame * 0.8) * 4;
     ctx.beginPath();
     ctx.ellipse(-w * 0.32, h * 0.02 + tailSwing, 6, 14, 0.4, 0, Math.PI * 2);
     ctx.fill();
@@ -445,33 +548,35 @@
     ctx.ellipse(w * 0.32, h * 0.02 - tailSwing, 6, 14, -0.4, 0, Math.PI * 2);
     ctx.fill();
 
-    // face — closed happy eyes (^_^) while running, open dot eyes while airborne
-    ctx.strokeStyle = "#4A4063";
-    ctx.fillStyle = "#4A4063";
-    ctx.lineWidth = 2;
-    if (player.onGround) {
+    // face
+    if (!isTrail) {
+      ctx.strokeStyle = "#4A4063";
+      ctx.fillStyle = "#4A4063";
+      ctx.lineWidth = 2;
+      if (onGround) {
+        ctx.beginPath();
+        ctx.arc(-w * 0.09, h * 0.03, 3, Math.PI, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(w * 0.09, h * 0.03, 3, Math.PI, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(-w * 0.09, h * 0.04, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(w * 0.09, h * 0.04, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // blush
+      ctx.fillStyle = "rgba(255,143,184,0.6)";
       ctx.beginPath();
-      ctx.arc(-w * 0.09, h * 0.03, 3, Math.PI, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(w * 0.09, h * 0.03, 3, Math.PI, Math.PI * 2);
-      ctx.stroke();
-    } else {
-      ctx.beginPath();
-      ctx.arc(-w * 0.09, h * 0.04, 2.2, 0, Math.PI * 2);
+      ctx.arc(-w * 0.18, h * 0.08, 3.2, 0, Math.PI * 2);
       ctx.fill();
       ctx.beginPath();
-      ctx.arc(w * 0.09, h * 0.04, 2.2, 0, Math.PI * 2);
+      ctx.arc(w * 0.18, h * 0.08, 3.2, 0, Math.PI * 2);
       ctx.fill();
     }
-    // blush
-    ctx.fillStyle = "rgba(255,143,184,0.6)";
-    ctx.beginPath();
-    ctx.arc(-w * 0.18, h * 0.08, 3.2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(w * 0.18, h * 0.08, 3.2, 0, Math.PI * 2);
-    ctx.fill();
 
     ctx.restore();
   }
