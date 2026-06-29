@@ -1,38 +1,68 @@
 /* =========================================================
-   Sakura Dash
+   Sakura Dash — cyber-anime edition
    Vanilla canvas runner + leaderboard wiring (no frameworks)
+
+   NOTE: localStorage keys, API endpoints, and the
+   save/fetch/render leaderboard functions are UNCHANGED
+   from the original game so existing saved scores and the
+   backend API keep working exactly as before.
    ========================================================= */
 
 (() => {
   "use strict";
 
   /* ---------- config ---------- */
-  // Same-origin by default. If you deploy the API elsewhere, change this.
   const API_BASE = window.SAKURA_API_BASE || "/api";
   const LOCAL_BEST_KEY = "sakuraDash.best";
   const LOCAL_RUNS_KEY = "sakuraDash.myRuns";
   const MAX_LOCAL_RUNS = 10;
 
-  const GROUND_Y = 320;        // y of the ground line, in canvas coords
-  const GRAVITY = 0.0026;      // px/ms^2 (canvas units)
-  const JUMP_VELOCITY = -1.05; // px/ms initial jump speed
-  const HOLD_GRAVITY_SCALE = 0.55; // lighter gravity while holding = higher jump
+  const GROUND_Y = 320;
+  const GRAVITY = 0.0026;
+  const JUMP_VELOCITY = -1.05;
+  const HOLD_GRAVITY_SCALE = 0.55;
 
-  // Chrome Dino tuning: slightly more gentle start, but higher speed ceiling
-  const BASE_SPEED = 0.32;     // px/ms world scroll speed at score 0
-  const MAX_SPEED = 1.30;      // Higher threshold for extreme difficulty
-  const SPEED_RAMP = 0.000012; // Gradual difficulty build-up over active runtime
+  const BASE_SPEED = 0.32;
+  const MAX_SPEED = 1.30;
+  const SPEED_RAMP = 0.000012;
+
+  // challenge-mode multipliers (client-side difficulty only)
+  const CHALLENGE_RAMP = { normal: 1, hard: 1.6, insane: 2.4 };
+  const CHALLENGE_MAXSPEED = { normal: 1.30, hard: 1.55, insane: 1.85 };
+  let challengeMode = "normal";
+
+  const LEVEL_STEP = 250; // level up every 250 points
+  const NEAR_MISS_DIST = 26; // px window counted as a "near miss" for combo
 
   /* ---------- DOM refs ---------- */
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
   const sky = document.getElementById("sky");
+  const gameWrap = document.getElementById("gameWrap");
 
   const hudScoreEl = document.getElementById("hudScore");
   const hudBestEl = document.getElementById("hudBest");
+  const hudLevelEl = document.getElementById("hudLevel");
+  const hudLevelCard = document.getElementById("hudLevelCard");
+  const hudComboEl = document.getElementById("hudCombo");
+  const hudComboCard = document.getElementById("hudComboCard");
+
+  const fxLayer = document.getElementById("fxLayer");
+  const noticeStack = document.getElementById("noticeStack");
 
   const startOverlay = document.getElementById("startOverlay");
   const startBtn = document.getElementById("startBtn");
+
+  const pauseOverlay = document.getElementById("pauseOverlay");
+  const pauseBtn = document.getElementById("pauseBtn");
+  const resumeBtn = document.getElementById("resumeBtn");
+
+  const soundBtn = document.getElementById("soundBtn");
+  const settingsBtn = document.getElementById("settingsBtn");
+  const settingsPanel = document.getElementById("settingsPanel");
+  const closeSettings = document.getElementById("closeSettings");
+  const soundToggle = document.getElementById("soundToggle");
+  const challengeSelect = document.getElementById("challengeSelect");
 
   const overOverlay = document.getElementById("overOverlay");
   const finalScoreEl = document.getElementById("finalScore");
@@ -48,12 +78,14 @@
   const myScoresList = document.getElementById("myScoresList");
   const apiStatusEl = document.getElementById("apiStatus");
 
-  /* ---------- logical canvas size (internal resolution) ---------- */
-  const VW = canvas.width;   // 900
-  const VH = canvas.height;  // 380
+  /* ---------- logical canvas size ---------- */
+  const VW = canvas.width;
+  const VH = canvas.height;
 
   /* ---------- state ---------- */
   let running = false;
+  let paused = false;
+  let soundOn = true;
   let lastTs = 0;
   let elapsedMs = 0;
   let score = 0;
@@ -63,36 +95,36 @@
   let petals = [];
   let nextObstacleAt = 0;
   let groundScrollX = 0;
-  let dayPhase = 0; // 0 = day .. 1 = night, drives sky + colors
-  let trailHistory = []; // Tracks historical Y steps for fast motion blur speed lines
+  let dayPhase = 0;
+  let trailHistory = [];
+
+  // gameplay-feel additions
+  let level = 1;
+  let combo = 0;
+  let comboTimer = 0; // ms left before combo resets
+  let lastNearMissObstacleId = null;
+  let obstacleIdCounter = 0;
+  let achievementsHit = new Set();
 
   hudBestEl.textContent = String(best);
 
   const player = {
-    x: 110,
-    y: GROUND_Y,
-    w: 46,
-    h: 58,
-    vy: 0,
-    onGround: true,
-    holding: false,
-    runFrame: 0,
-    squashT: 0,
+    x: 110, y: GROUND_Y, w: 46, h: 58,
+    vy: 0, onGround: true, holding: false,
+    runFrame: 0, squashT: 0,
   };
 
   /* ---------- input ---------- */
   function pressJump() {
-    if (!running) return;
+    if (!running || paused) return;
     if (player.onGround) {
       player.vy = JUMP_VELOCITY;
       player.onGround = false;
-      player.squashT = 1; // little anticipation squash
+      player.squashT = 1;
     }
     player.holding = true;
   }
-  function releaseJump() {
-    player.holding = false;
-  }
+  function releaseJump() { player.holding = false; }
 
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space" || e.code === "ArrowUp") {
@@ -103,12 +135,12 @@
         pressJump();
       }
     }
+    if (e.code === "Escape" && running) togglePause();
   });
   window.addEventListener("keyup", (e) => {
     if (e.code === "Space" || e.code === "ArrowUp") releaseJump();
   });
 
-  // Comprehensive pointer events for high fidelity mouse + mobile response
   canvas.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     if (!running) return;
@@ -129,6 +161,92 @@
     startGame();
   });
 
+  /* ---------- pause / settings / sound (UI/UX only) ---------- */
+  function togglePause() {
+    if (!running) return;
+    paused = !paused;
+    if (paused) {
+      pauseOverlay.classList.remove("overlay--hidden");
+      pauseBtn.textContent = "►";
+    } else {
+      pauseOverlay.classList.add("overlay--hidden");
+      pauseBtn.textContent = "❙❙";
+      lastTs = performance.now();
+      requestAnimationFrame(loop);
+    }
+  }
+  pauseBtn.addEventListener("click", togglePause);
+  resumeBtn.addEventListener("click", togglePause);
+
+  function setSound(on) {
+    soundOn = on;
+    soundBtn.textContent = on ? "🔊" : "🔈";
+    soundToggle.setAttribute("aria-pressed", String(on));
+  }
+  soundBtn.addEventListener("click", () => setSound(!soundOn));
+  soundToggle.addEventListener("click", () => setSound(!soundOn));
+
+  settingsBtn.addEventListener("click", () => {
+    settingsPanel.classList.remove("panel--hidden");
+    if (running && !paused) togglePause();
+  });
+  closeSettings.addEventListener("click", () => {
+    settingsPanel.classList.add("panel--hidden");
+  });
+  challengeSelect.addEventListener("change", (e) => {
+    challengeMode = e.target.value;
+  });
+
+  /* ---------- floating fx / notifications ---------- */
+  function spawnScorePop(text, xRatio, yRatio, color) {
+    const el = document.createElement("div");
+    el.className = "fx-pop";
+    el.textContent = text;
+    el.style.left = `${xRatio * 100}%`;
+    el.style.top = `${yRatio * 100}%`;
+    if (color) el.style.color = color;
+    fxLayer.appendChild(el);
+    setTimeout(() => el.remove(), 900);
+  }
+
+  function showNotice(text, type) {
+    const el = document.createElement("div");
+    el.className = "notice" + (type === "achievement" ? " notice--achievement" : "");
+    el.textContent = text;
+    noticeStack.appendChild(el);
+    setTimeout(() => el.remove(), 2300);
+  }
+
+  function triggerShake() {
+    gameWrap.classList.remove("is-shaking");
+    // restart animation
+    void gameWrap.offsetWidth;
+    gameWrap.classList.add("is-shaking");
+  }
+
+  function bumpCombo() {
+    combo += 1;
+    comboTimer = 2200;
+    hudComboCard.hidden = false;
+    hudComboEl.textContent = `x${Math.min(9, 1 + Math.floor(combo / 2))}`;
+    hudComboCard.classList.remove("combo-pop");
+    void hudComboCard.offsetWidth;
+    hudComboCard.classList.add("combo-pop");
+    if (combo === 3 || combo === 6 || combo === 10) {
+      const key = "combo-" + combo;
+      if (!achievementsHit.has(key)) {
+        achievementsHit.add(key);
+        showNotice(`⚡ ${combo}-combo streak!`, "achievement");
+      }
+    }
+  }
+
+  function resetCombo() {
+    combo = 0;
+    comboTimer = 0;
+    hudComboCard.hidden = true;
+  }
+
   /* ---------- game lifecycle ---------- */
   function resetState() {
     score = 0;
@@ -142,8 +260,12 @@
     player.onGround = true;
     player.holding = false;
     dayPhase = 0;
+    level = 1;
+    achievementsHit.clear();
+    resetCombo();
     updateSkyClass();
     hudScoreEl.textContent = "0";
+    hudLevelEl.textContent = "1";
     hudScoreEl.parentElement.classList.remove("score-milestone");
     seedPetals();
   }
@@ -162,6 +284,10 @@
     resetState();
     startOverlay.classList.add("overlay--hidden");
     overOverlay.classList.add("overlay--hidden");
+    pauseOverlay.classList.add("overlay--hidden");
+    settingsPanel.classList.add("panel--hidden");
+    paused = false;
+    pauseBtn.textContent = "❙❙";
     running = true;
     lastTs = performance.now();
     requestAnimationFrame(loop);
@@ -169,6 +295,7 @@
 
   function endGame() {
     running = false;
+    triggerShake();
     const finalScoreVal = Math.floor(score);
     finalScoreEl.textContent = String(finalScoreVal);
 
@@ -193,8 +320,8 @@
 
   /* ---------- main loop ---------- */
   function loop(ts) {
-    if (!running) return;
-    const dt = Math.min(40, ts - lastTs); // clamp dt to avoid big jumps on tab-back
+    if (!running || paused) return;
+    const dt = Math.min(40, ts - lastTs);
     lastTs = ts;
     elapsedMs += dt;
 
@@ -205,23 +332,46 @@
   }
 
   function update(dt) {
-    // difficulty ramp
-    speed = Math.min(MAX_SPEED, BASE_SPEED + elapsedMs * SPEED_RAMP);
+    // difficulty ramp (scaled by challenge mode)
+    const ramp = SPEED_RAMP * (CHALLENGE_RAMP[challengeMode] || 1);
+    const maxSpeed = CHALLENGE_MAXSPEED[challengeMode] || MAX_SPEED;
+    speed = Math.min(maxSpeed, BASE_SPEED + elapsedMs * ramp);
 
-    // score = distance survived
+    // score = distance survived, boosted slightly by combo multiplier
+    const comboMult = 1 + Math.min(0.8, combo * 0.08);
     const oldScore = Math.floor(score);
-    score += dt * speed * 0.06;
+    score += dt * speed * 0.06 * comboMult;
     const currentFloorScore = Math.floor(score);
     hudScoreEl.textContent = String(currentFloorScore);
 
-    // CSS Milestone effect when crossing another hundred points!
-    if (currentFloorScore > oldScore && currentFloorScore % 100 === 0) {
-      const parentScore = hudScoreEl.parentElement;
-      parentScore.classList.add("score-milestone");
-      setTimeout(() => parentScore.classList.remove("score-milestone"), 400);
+    // combo timer decay
+    if (comboTimer > 0) {
+      comboTimer -= dt;
+      if (comboTimer <= 0) resetCombo();
     }
 
-    // day -> dusk -> night over ~2200 score points, then loop softly
+    // milestone pop every 100 + level-up every LEVEL_STEP
+    if (currentFloorScore > oldScore) {
+      if (currentFloorScore % 100 === 0) {
+        const parentScore = hudScoreEl.parentElement;
+        parentScore.classList.add("score-milestone");
+        setTimeout(() => parentScore.classList.remove("score-milestone"), 400);
+        spawnScorePop(`+${currentFloorScore - (currentFloorScore % 100 === 0 ? 0 : 0)}`, 0.1, 0.12, "var(--cyan)");
+      }
+      const newLevel = Math.floor(currentFloorScore / LEVEL_STEP) + 1;
+      if (newLevel > level) {
+        level = newLevel;
+        hudLevelEl.textContent = String(level);
+        hudLevelCard.classList.add("score-milestone");
+        setTimeout(() => hudLevelCard.classList.remove("score-milestone"), 400);
+        showNotice(`🚀 Level ${level}!`, "achievement");
+      }
+      if (currentFloorScore === 500 || currentFloorScore === 1000 || currentFloorScore === 2000) {
+        showNotice(`🏆 ${currentFloorScore} points reached!`, "achievement");
+      }
+    }
+
+    // day -> dusk -> night loop
     dayPhase = (currentFloorScore % 2200) / 2200;
     updateSkyClass();
 
@@ -242,18 +392,13 @@
     if (player.squashT > 0) player.squashT = Math.max(0, player.squashT - dt * 0.006);
     player.runFrame += dt * (player.onGround ? 0.012 : 0);
 
-    // Push coordinates for running dash trail mechanics
     trailHistory.push({ y: player.y, squash: player.squashT, run: player.runFrame, ground: player.onGround });
-    if (trailHistory.length > 4) {
-      trailHistory.shift();
-    }
+    if (trailHistory.length > 4) trailHistory.shift();
 
     // obstacles distance tracking
     nextObstacleAt -= dt * speed;
     if (nextObstacleAt <= 0) {
       spawnObstacle();
-
-      // Dynamic spacing: gaps shrink slightly when running fast to test reflexes
       const dynamicGapScaler = Math.max(0.65, 1.0 - (speed - BASE_SPEED) * 0.4);
       const gap = (260 + Math.random() * 220 - speed * 90) * dynamicGapScaler;
       nextObstacleAt = Math.max(145, gap);
@@ -261,7 +406,7 @@
     for (const o of obstacles) o.x -= dt * speed;
     obstacles = obstacles.filter((o) => o.x + o.w > -40);
 
-    // collision (slightly forgiving hitbox)
+    // collision (slightly forgiving hitbox) + near-miss combo detection
     const px1 = player.x + 10, px2 = player.x + player.w - 10;
     const py1 = player.y - player.h + 10, py2 = player.y - 4;
     for (const o of obstacles) {
@@ -271,6 +416,14 @@
       if (hit) {
         endGame();
         return;
+      }
+      // near-miss: obstacle just passed the player closely while airborne
+      if (!o._scored && o.x + o.w < player.x) {
+        o._scored = true;
+        if (!player.onGround && Math.abs((o.x + o.w) - player.x) < NEAR_MISS_DIST + 40) {
+          bumpCombo();
+          spawnScorePop("Nice!", (player.x / VW), (player.y - player.h) / VH - 0.05, "var(--purple)");
+        }
       }
     }
 
@@ -287,29 +440,22 @@
   }
 
   function spawnObstacle() {
+    obstacleIdCounter += 1;
     const isHighCrane = score > 350 && Math.random() < 0.28;
 
     if (isHighCrane) {
-      // High floating paper crane: stay down or match height perfectly
       obstacles.push({
-        x: VW + 10,
-        y: GROUND_Y - 72,
-        w: 32,
-        h: 24,
-        isCrane: true,
-        glow: Math.random() * Math.PI * 2
+        id: obstacleIdCounter,
+        x: VW + 10, y: GROUND_Y - 72, w: 32, h: 24,
+        isCrane: true, glow: Math.random() * Math.PI * 2,
       });
     } else {
-      // Standard Ground Lanterns
       const tall = Math.random() < 0.35;
       obstacles.push({
-        x: VW + 10,
-        y: GROUND_Y,
-        w: tall ? 30 : 26,
-        h: tall ? 64 : 44,
-        tall,
-        isCrane: false,
-        glow: Math.random() * Math.PI * 2,
+        id: obstacleIdCounter,
+        x: VW + 10, y: GROUND_Y,
+        w: tall ? 30 : 26, h: tall ? 64 : 44,
+        tall, isCrane: false, glow: Math.random() * Math.PI * 2,
       });
     }
   }
@@ -327,27 +473,24 @@
     drawGround();
     drawObstacles();
 
-    // Draw fading action trails if speed is high
     if (speed > BASE_SPEED * 1.25) {
       for (let i = 0; i < trailHistory.length; i++) {
         const alpha = (i + 1) / trailHistory.length * 0.22;
         ctx.save();
         ctx.globalAlpha = alpha;
-        // Offsets copy behind main player position
         const trailXOffset = (trailHistory.length - i) * -16 * (speed / MAX_SPEED);
         drawPlayerSkeleton(player.x + trailXOffset, trailHistory[i].y, trailHistory[i].squash, trailHistory[i].run, trailHistory[i].ground, true);
         ctx.restore();
       }
     }
 
-    // Draw real player
     drawPlayerSkeleton(player.x, player.y, player.squashT, player.runFrame, player.onGround, false);
   }
 
   function drawPetals() {
     ctx.save();
     for (const p of petals) {
-      ctx.fillStyle = "rgba(255,143,184,0.55)";
+      ctx.fillStyle = "rgba(34, 211, 238, 0.45)";
       ctx.beginPath();
       ctx.ellipse(p.x, p.y, p.r, p.r * 0.7, p.sway, 0, Math.PI * 2);
       ctx.fill();
@@ -356,12 +499,10 @@
   }
 
   function drawGround() {
-    // path
-    ctx.fillStyle = "#FCE9F1";
+    ctx.fillStyle = "#0B1424";
     ctx.fillRect(0, GROUND_Y, VW, VH - GROUND_Y);
 
-    // dashed center-ish line for motion feedback
-    ctx.strokeStyle = "rgba(232,79,142,0.35)";
+    ctx.strokeStyle = "rgba(34, 211, 238, 0.35)";
     ctx.lineWidth = 4;
     ctx.setLineDash([18, 22]);
     ctx.lineDashOffset = groundScrollX;
@@ -371,18 +512,14 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // ground edge
-    ctx.fillStyle = "#E84F8E";
-    ctx.fillRect(0, GROUND_Y, VW, 4);
+    ctx.fillStyle = "#22D3EE";
+    ctx.fillRect(0, GROUND_Y, VW, 3);
   }
 
   function drawObstacles() {
     for (const o of obstacles) {
-      if (o.isCrane) {
-        drawCrane(o);
-      } else {
-        drawLantern(o);
-      }
+      if (o.isCrane) drawCrane(o);
+      else drawLantern(o);
     }
   }
 
@@ -391,29 +528,26 @@
     const hoverBob = Math.sin(elapsedMs * 0.007 + x * 0.05) * 4;
 
     ctx.save();
-    // Soft glowing aura for the crane
-    ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.fillStyle = "rgba(139, 92, 246, 0.30)";
     ctx.beginPath();
     ctx.arc(x + w / 2, y - h / 2 + hoverBob, w, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = "#FFF8F0"; // Cream origami paper
-    ctx.strokeStyle = "#FF6FA8"; // Soft pink lines
+    ctx.fillStyle = "#1E293B";
+    ctx.strokeStyle = "#8B5CF6";
     ctx.lineWidth = 1.5;
 
-    // Vector structural layout for origami bird
     ctx.beginPath();
     ctx.moveTo(x, y - h / 2 + hoverBob);
-    ctx.lineTo(x + w * 0.35, y - h + hoverBob); // upper wing peak
-    ctx.lineTo(x + w * 0.5, y - h * 0.2 + hoverBob); // inner chest node
-    ctx.lineTo(x + w, y - h * 0.75 + hoverBob); // beak front
-    ctx.lineTo(x + w * 0.65, y + hoverBob); // low throat
-    ctx.lineTo(x + w * 0.3, y + hoverBob); // base belly
+    ctx.lineTo(x + w * 0.35, y - h + hoverBob);
+    ctx.lineTo(x + w * 0.5, y - h * 0.2 + hoverBob);
+    ctx.lineTo(x + w, y - h * 0.75 + hoverBob);
+    ctx.lineTo(x + w * 0.65, y + hoverBob);
+    ctx.lineTo(x + w * 0.3, y + hoverBob);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
 
-    // Secondary structural fold lines for genuine origami accenting
     ctx.beginPath();
     ctx.moveTo(x + w * 0.5, y - h * 0.2 + hoverBob);
     ctx.lineTo(x + w * 0.2, y - h * 0.8 + hoverBob);
@@ -427,30 +561,26 @@
     const topY = baseY - h;
     const glow = 0.55 + 0.25 * Math.sin(o.glow + elapsedMs * 0.004);
 
-    // string
-    ctx.strokeStyle = "#C98A4B";
+    ctx.strokeStyle = "rgba(148,163,184,0.5)";
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(x + w / 2, 0);
     ctx.lineTo(x + w / 2, topY);
     ctx.stroke();
 
-    // lantern body
     const grad = ctx.createLinearGradient(x, topY, x, baseY);
-    grad.addColorStop(0, "#FFB37A");
-    grad.addColorStop(1, "#FF6FA8");
+    grad.addColorStop(0, "#3B82F6");
+    grad.addColorStop(1, "#22D3EE");
     ctx.fillStyle = grad;
     roundRect(x, topY, w, h, w * 0.4);
     ctx.fill();
 
-    // glow halo
-    ctx.fillStyle = `rgba(255, 211, 120, ${glow * 0.5})`;
+    ctx.fillStyle = `rgba(34, 211, 238, ${glow * 0.5})`;
     ctx.beginPath();
     ctx.ellipse(x + w / 2, topY + h / 2, w * 1.1, h * 0.6, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // cap + bottom tassel
-    ctx.fillStyle = "#C98A4B";
+    ctx.fillStyle = "#0F172A";
     ctx.fillRect(x + w * 0.15, topY - 4, w * 0.7, 5);
     ctx.fillRect(x + w * 0.15, baseY - 5, w * 0.7, 5);
     ctx.beginPath();
@@ -469,9 +599,8 @@
     ctx.closePath();
   }
 
-  // Refactored to draw either standard player colors or neon speed silhouettes
   function playerColor(standardColor, isTrail) {
-    return isTrail ? "rgba(255, 111, 168, 0.4)" : standardColor;
+    return isTrail ? "rgba(34, 211, 238, 0.35)" : standardColor;
   }
 
   function drawPlayerSkeleton(x, y, squash, runFrame, onGround, isTrail) {
@@ -482,9 +611,8 @@
     ctx.save();
     ctx.translate(x + w / 2, y);
 
-    // shadow
     if (!isTrail) {
-      ctx.fillStyle = "rgba(74,64,99,0.18)";
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
       ctx.beginPath();
       ctx.ellipse(0, 6, w * 0.45, 6, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -494,23 +622,23 @@
 
     // legs
     const legSwing = onGround ? Math.sin(runFrame) : 0.4;
-    ctx.fillStyle = playerColor("#4A4063", isTrail);
+    ctx.fillStyle = playerColor("#1E293B", isTrail);
     ctx.fillRect(-w * 0.18 + legSwing * 6, h * 0.62, w * 0.16, h * 0.32);
     ctx.fillRect(w * 0.02 - legSwing * 6, h * 0.62, w * 0.16, h * 0.32);
 
-    // skirt
-    ctx.fillStyle = playerColor("#FF6FA8", isTrail);
+    // jacket / torso bottom
+    ctx.fillStyle = playerColor("#3B82F6", isTrail);
     roundRect(-w * 0.32, h * 0.42, w * 0.64, h * 0.26, 6);
     ctx.fill();
 
     // torso / top
-    ctx.fillStyle = playerColor("#FFF8F0", isTrail);
+    ctx.fillStyle = playerColor("#F8FAFC", isTrail);
     roundRect(-w * 0.26, h * 0.16, w * 0.52, h * 0.32, 8);
     ctx.fill();
 
     // arms
     const armSwing = onGround ? Math.sin(runFrame + Math.PI) * 8 : -6;
-    ctx.strokeStyle = playerColor("#FFE3EF", isTrail);
+    ctx.strokeStyle = playerColor("#22D3EE", isTrail);
     ctx.lineWidth = 7;
     ctx.lineCap = "round";
     ctx.beginPath();
@@ -523,23 +651,21 @@
     ctx.stroke();
 
     // head
-    ctx.fillStyle = playerColor("#FFE3D6", isTrail);
+    ctx.fillStyle = playerColor("#E7ECF3", isTrail);
     ctx.beginPath();
     ctx.arc(0, h * 0.05, w * 0.26, 0, Math.PI * 2);
     ctx.fill();
 
     // hair
-    ctx.fillStyle = playerColor("#5B4B8A", isTrail);
+    ctx.fillStyle = playerColor("#8B5CF6", isTrail);
     ctx.beginPath();
     ctx.arc(0, h * 0.02, w * 0.29, Math.PI * 1.02, Math.PI * 1.98);
     ctx.fill();
-    // bangs
     ctx.beginPath();
     ctx.moveTo(-w * 0.22, h * -0.02);
     ctx.quadraticCurveTo(0, h * 0.08, w * 0.22, h * -0.02);
     ctx.quadraticCurveTo(0, h * -0.16, -w * 0.22, h * -0.02);
     ctx.fill();
-    // twin tails
     const tailSwing = Math.sin(runFrame * 0.8) * 4;
     ctx.beginPath();
     ctx.ellipse(-w * 0.32, h * 0.02 + tailSwing, 6, 14, 0.4, 0, Math.PI * 2);
@@ -550,8 +676,8 @@
 
     // face
     if (!isTrail) {
-      ctx.strokeStyle = "#4A4063";
-      ctx.fillStyle = "#4A4063";
+      ctx.strokeStyle = "#1E293B";
+      ctx.fillStyle = "#1E293B";
       ctx.lineWidth = 2;
       if (onGround) {
         ctx.beginPath();
@@ -568,8 +694,8 @@
         ctx.arc(w * 0.09, h * 0.04, 2.2, 0, Math.PI * 2);
         ctx.fill();
       }
-      // blush
-      ctx.fillStyle = "rgba(255,143,184,0.6)";
+      // cheek glow accents (instead of pink blush)
+      ctx.fillStyle = "rgba(34,211,238,0.5)";
       ctx.beginPath();
       ctx.arc(-w * 0.18, h * 0.08, 3.2, 0, Math.PI * 2);
       ctx.fill();
@@ -581,7 +707,9 @@
     ctx.restore();
   }
 
-  /* ---------- local run history ---------- */
+  /* =========================================================
+     ---------- LOCAL RUN HISTORY (unchanged logic) ----------
+     ========================================================= */
   function saveLocalRun(value) {
     const runs = JSON.parse(localStorage.getItem(LOCAL_RUNS_KEY) || "[]");
     runs.push({ score: value, at: Date.now() });
@@ -607,7 +735,9 @@
       .join("");
   }
 
-  /* ---------- global leaderboard via backend ---------- */
+  /* =========================================================
+     ------- GLOBAL LEADERBOARD VIA BACKEND (unchanged) -------
+     ========================================================= */
   function medalClass(rank) {
     if (rank === 1) return "leaderboard__row--gold";
     if (rank === 2) return "leaderboard__row--silver";
@@ -632,7 +762,7 @@
       setApiStatus(true);
     } catch (err) {
       console.warn("Could not load leaderboard:", err);
-      leaderboardList.innerHTML = `<li class="leaderboard__empty">Couldn't reach the scroll. Showing local scores only.</li>`;
+      leaderboardList.innerHTML = `<li class="leaderboard__empty">Couldn't reach the leaderboard. Showing local scores only.</li>`;
       setApiStatus(false);
     }
   }
@@ -659,7 +789,7 @@
   function setApiStatus(ok) {
     apiStatusEl.classList.remove("is-ok", "is-error");
     if (ok) {
-      apiStatusEl.textContent = "scroll synced ✓";
+      apiStatusEl.textContent = "leaderboard synced ✓";
       apiStatusEl.classList.add("is-ok");
     } else {
       apiStatusEl.textContent = "offline — local scores only";
@@ -687,7 +817,7 @@
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || `HTTP ${res.status}`);
       }
-      saveStatus.textContent = "Saved to the Scroll of Fame! 🌸";
+      saveStatus.textContent = "Saved to the leaderboard! ⚡";
       await fetchTopScores();
     } catch (err) {
       console.warn("Save failed:", err);

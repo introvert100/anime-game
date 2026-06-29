@@ -4,10 +4,10 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Sakura Dash — anime runner</title>
-<meta name="description" content="A cute anime girl endless runner. Dash through the sakura streets, dodge lanterns, and climb the scroll of fame." />
+<meta name="description" content="A cyber-anime endless runner. Dash the neon streets, dodge lanterns, climb the leaderboard." />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -29,56 +29,109 @@
       <span class="brand__kanji" aria-hidden="true">桜</span>
       Sakura&nbsp;Dash
     </h1>
-    <p class="brand__tag">an endless dash through the sakura streets</p>
+    <p class="brand__tag">a cyber-anime dash through the neon streets</p>
   </header>
 
   <main class="layout">
 
     <!-- ===================== GAME ===================== -->
     <section class="lantern-frame" aria-label="Game">
-      <div class="lantern-frame__tassel" aria-hidden="true"></div>
 
-      <div class="game-wrap">
+      <div class="game-wrap" id="gameWrap">
         <canvas id="game" width="900" height="380" role="img"
           aria-label="Sakura Dash game canvas. Press space or tap to jump over lanterns."></canvas>
 
+        <!-- top controls (pause / settings / sound) -->
+        <div class="top-controls">
+          <button class="icon-btn" id="pauseBtn" aria-label="Pause" title="Pause">❙❙</button>
+          <button class="icon-btn" id="soundBtn" aria-label="Toggle sound" title="Sound">🔊</button>
+          <button class="icon-btn" id="settingsBtn" aria-label="Settings" title="Settings">⚙</button>
+        </div>
+
         <!-- HUD -->
         <div class="hud">
-          <div class="hud__score">
+          <div class="hud__score hud-card">
             <span class="hud__label">score</span>
             <span class="hud__value" id="hudScore">0</span>
           </div>
-          <div class="hud__best">
+          <div class="hud__center">
+            <div class="hud-card hud__level" id="hudLevelCard">
+              <span class="hud__label">lvl</span>
+              <span class="hud__value" id="hudLevel">1</span>
+            </div>
+            <div class="hud-card hud__combo" id="hudComboCard" hidden>
+              <span class="hud__label">combo</span>
+              <span class="hud__value" id="hudCombo">x1</span>
+            </div>
+          </div>
+          <div class="hud__best hud-card">
             <span class="hud__label">best</span>
             <span class="hud__value" id="hudBest">0</span>
+          </div>
+        </div>
+
+        <!-- floating score pop / notifications layer -->
+        <div class="fx-layer" id="fxLayer" aria-hidden="true"></div>
+        <div class="notice-stack" id="noticeStack" aria-live="polite"></div>
+
+        <!-- settings panel -->
+        <div class="panel panel--hidden" id="settingsPanel">
+          <div class="panel__card">
+            <h3 class="panel__title">Settings</h3>
+
+            <label class="panel__row">
+              <span>Sound</span>
+              <button class="toggle" id="soundToggle" aria-pressed="true">
+                <span class="toggle__dot"></span>
+              </button>
+            </label>
+
+            <div class="panel__row panel__row--col">
+              <span>Challenge mode</span>
+              <select class="select" id="challengeSelect">
+                <option value="normal">Normal</option>
+                <option value="hard">Hard — faster ramp</option>
+                <option value="insane">Insane — brutal speed</option>
+              </select>
+            </div>
+
+            <button class="btn btn--ghost-line" id="closeSettings">Close</button>
           </div>
         </div>
 
         <!-- Start overlay -->
         <div class="overlay" id="startOverlay">
           <div class="overlay__card">
-            <p class="overlay__chibi" aria-hidden="true">🌸🏃‍♀️🌸</p>
+            <p class="overlay__chibi" aria-hidden="true">⚡🏃</p>
             <h2 class="overlay__title">Ready to dash?</h2>
             <p class="overlay__hint">
               Press <kbd>Space</kbd> / <kbd>↑</kbd> or tap the field to jump.<br/>
-              Hold to jump higher. Dodge the lanterns!
+              Hold to jump higher. Dodge the lanterns. Chain near-misses for combo!
             </p>
             <button class="btn btn--primary" id="startBtn">Start running</button>
+          </div>
+        </div>
+
+        <!-- Pause overlay -->
+        <div class="overlay overlay--hidden" id="pauseOverlay">
+          <div class="overlay__card">
+            <h2 class="overlay__title">Paused</h2>
+            <button class="btn btn--primary" id="resumeBtn">Resume</button>
           </div>
         </div>
 
         <!-- Game over overlay -->
         <div class="overlay overlay--hidden" id="overOverlay">
           <div class="overlay__card">
-            <p class="overlay__chibi" aria-hidden="true">🌙✨</p>
+            <p class="overlay__chibi" aria-hidden="true">💥</p>
             <h2 class="overlay__title">Run complete!</h2>
             <p class="overlay__result">
               Score: <strong id="finalScore">0</strong>
             </p>
-            <p class="overlay__newbest" id="newBestBadge" hidden>✨ New personal best!</p>
+            <p class="overlay__newbest" id="newBestBadge" hidden>⚡ New personal best!</p>
 
             <form class="name-form" id="nameForm" autocomplete="off">
-              <label class="name-form__label" for="nameInput">Save your run to the scroll of fame</label>
+              <label class="name-form__label" for="nameInput">Save your run to the leaderboard</label>
               <div class="name-form__row">
                 <input
                   class="name-form__input"
@@ -105,20 +158,17 @@
 
     <!-- ===================== LEADERBOARD ===================== -->
     <aside class="scroll-board" aria-label="Leaderboard">
-      <div class="scroll-board__cap scroll-board__cap--top" aria-hidden="true"></div>
 
       <div class="scroll-board__body">
-        <h2 class="scroll-board__title">Scroll of Fame</h2>
-        <p class="scroll-board__sub">Top 10 dashers</p>
+        <h2 class="scroll-board__title">Leaderboard</h2>
+        <p class="scroll-board__sub">Top 10 runners</p>
 
         <ol class="leaderboard" id="leaderboardList">
           <!-- populated by app.js -->
           <li class="leaderboard__empty">Loading scores…</li>
         </ol>
 
-        <div class="divider" role="separator" aria-hidden="true">
-          <span>✿</span>
-        </div>
+        <div class="divider" role="separator" aria-hidden="true"><span>⟡</span></div>
 
         <h3 class="scroll-board__title scroll-board__title--small">Your runs</h3>
         <p class="scroll-board__sub">saved on this device</p>
@@ -128,13 +178,12 @@
         </ol>
       </div>
 
-      <div class="scroll-board__cap scroll-board__cap--bottom" aria-hidden="true"></div>
     </aside>
 
   </main>
 
   <footer class="site-footer">
-    <span id="apiStatus" class="api-status" role="status" aria-live="polite">connecting to the scroll…</span>
+    <span id="apiStatus" class="api-status" role="status" aria-live="polite">connecting…</span>
   </footer>
 
 </div>
